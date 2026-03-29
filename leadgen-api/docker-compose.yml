@@ -1,0 +1,99 @@
+version: '3.8'
+
+x-app-base: &app-base
+  build: .
+  image: leadgen-api:latest
+
+services:
+  api:
+    <<: *app-base
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env.example
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - leadgen_net
+
+  worker:
+    <<: *app-base
+    command: celery -A app.scheduler.celery_app worker --loglevel=info --concurrency=4
+    volumes:
+      - .:/app
+    env_file:
+      - .env.example
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - leadgen_net
+
+  beat:
+    <<: *app-base
+    command: celery -A app.scheduler.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    env_file:
+      - .env.example
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - leadgen_net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - leadgen_net
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: leadgen
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d leadgen"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - leadgen_net
+
+  flower:
+    image: mher/flower
+    command: celery flower --broker=redis://redis:6379/0 --port=5555
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - leadgen_net
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  leadgen_net:
+    driver: bridge
